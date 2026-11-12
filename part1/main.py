@@ -28,32 +28,46 @@ def tokenize_function(examples):
 
 # Core training function
 def do_train(args, model, train_dataloader, save_dir="./out"):
+    """
+    train_dataloader is DataLoader object that supplies mini-batches of training data.
+    """
     optimizer = AdamW(model.parameters(), lr=args.learning_rate)
-    num_epochs = args.num_epochs
+    num_epochs = args.num_epochs  # Number of complete passes through the training set.
     num_training_steps = num_epochs * len(train_dataloader)
     lr_scheduler = get_scheduler(
         name="linear", optimizer=optimizer, num_warmup_steps=0, num_training_steps=num_training_steps
     )
-    model.train()
+    model.train() # Training mode
     progress_bar = tqdm(range(num_training_steps))
 
     ################################
-    ##### YOUR CODE BEGINGS HERE ###
+    ##### YOUR CODE BEGINS HERE ###
+    for _ in range(num_epochs):
+        for batch in train_dataloader:
+            batch = {k: v.to(device) for k, v in batch.items()}  # Transfer the tensors to GPU and unpack into a dictionary
+
+            forward_pass = model(**batch)
+
+            loss = forward_pass.loss
+
+            loss.backward()
+
+            optimizer.step()
+            lr_scheduler.step()
+
+            optimizer.zero_grad()
+            progress_bar.update(1)
 
     # Implement the training loop --- make sure to use the optimizer and lr_sceduler (learning rate scheduler)
     # Remember that pytorch uses gradient accumumlation so you need to use zero_grad (https://pytorch.org/tutorials/recipes/recipes/zeroing_out_gradients.html)
     # You can use progress_bar.update(1) to see the progress during training
     # You can refer to the pytorch tutorial covered in class for reference
 
-    raise NotImplementedError
-
     ##### YOUR CODE ENDS HERE ######
-
     print("Training completed...")
     print("Saving Model....")
     model.save_pretrained(save_dir)
-
-    return
+    print("Model Saved")
 
 
 # Core evaluation function
