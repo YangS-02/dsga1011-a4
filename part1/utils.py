@@ -185,7 +185,7 @@ def custom_transform(example, rng=RNG):
             random_value = rng.random()
             if random_value < 0.05:
                 continue
-            elif random_value < 0.15:
+            elif random_value < 0.20:
                 transformed.append(get_typo(word, rng))
             else:
                 transformed.append(word)
@@ -193,9 +193,9 @@ def custom_transform(example, rng=RNG):
         # All other words
         else:
             random_value = rng.random()
-            if random_value < 0.10:
+            if random_value < 0.15:
                 transformed.append(get_typo(word, rng))
-            elif random_value < 0.25:
+            elif random_value < 0.30:
                 transformed.append(get_synonyms(word, rng))
             else:
                 transformed.append(word)
