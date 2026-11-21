@@ -48,6 +48,9 @@ def get_args():
     parser.add_argument('--batch_size', type=int, default=16)
     parser.add_argument('--test_batch_size', type=int, default=16)
 
+    # Other hyperparameters
+    parser.add_argument("--max_new_tokens", type=int, default=512)
+
     args = parser.parse_args()
     return args
 
@@ -138,9 +141,46 @@ def eval_epoch(args, model, dev_loader, gt_sql_pth, model_sql_path, gt_record_pa
     should both provide good results. If you find that this component of evaluation takes too long with your compute,
     we found the cross-entropy loss (in the evaluation set) to be well (albeit imperfectly) correlated with F1 performance.
     '''
-    # TODO
     model.eval()
-    return 0, 0, 0, 0, 0
+    tokenizer = dev_loader.dataset.tokenizer
+    criterion = nn.CrossEntropyLoss(ignore_index=PAD_IDX, reduction="sum")
+    total_loss, total_tokens = 0.0, 0
+    predictions = []
+
+    with torch.inference_mode():
+        for batch in tqdm(dev_loader):
+            encoder_ids, encoder_mask, decoder_inputs, decoder_targets, starts = (
+                tensor.to(DEVICE) for tensor in batch
+            )
+
+            logits = model(
+                input_ids=encoder_ids,
+                attention_mask=encoder_mask,
+                decoder_input_ids=decoder_inputs,
+                use_cache=False,
+            ).logits
+            total_loss += criterion(logits.flatten(0, 1), decoder_targets.flatten()).item()
+            total_tokens += (decoder_targets != PAD_IDX).sum().item()
+
+            generated_ids = model.generate(
+                input_ids=encoder_ids,
+                attention_mask=encoder_mask,
+                decoder_input_ids=starts,
+                max_new_tokens=args.max_new_tokens,
+                num_beams=1,
+                do_sample=False,
+            )
+            predictions.extend(tokenizer.batch_decode(
+                generated_ids.cpu(), skip_special_tokens=True,
+                clean_up_tokenization_spaces=False,
+            ))
+
+    save_queries_and_records(predictions, model_sql_path, model_record_path)
+    sql_em, record_em, record_f1, errors = compute_metrics(
+        gt_sql_pth, model_sql_path, gt_record_path, model_record_path
+    )
+    error_rate = sum(bool(error) for error in errors) / len(errors)
+    return total_loss / total_tokens, record_f1, record_em, sql_em, error_rate
         
 def test_inference(args, model, test_loader, model_sql_path, model_record_path):
     '''
