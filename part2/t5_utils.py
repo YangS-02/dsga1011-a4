@@ -37,11 +37,15 @@ def mkdir(dirpath):
 
 def save_model(checkpoint_dir, model, best):
     # Save model checkpoint to be able to load the model later
-    pass
+    checkpoint_path = os.path.join(checkpoint_dir, "best" if best else "last")
+    model.save_pretrained(checkpoint_path)
 
 def load_model_from_checkpoint(args, best):
     # Load model from a checkpoint
-    pass
+    model_type = "ft" if args.finetune else "scr"
+    checkpoint_dir = os.path.join("checkpoints", f"{model_type}_experiments", args.experiment_name)
+    checkpoint_path = os.path.join(checkpoint_dir, "best" if best else "last")
+    return T5ForConditionalGeneration.from_pretrained(checkpoint_path).to(DEVICE)
 
 def initialize_optimizer_and_scheduler(args, model, epoch_length):
     optimizer = initialize_optimizer(args, model)
