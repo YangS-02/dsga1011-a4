@@ -20,7 +20,13 @@ def initialize_model(args):
     or training a T5 model initialized with the 'google-t5/t5-small' config
     from scratch.
     '''
-    pass
+    checkpoint = "google-t5/t5-small"
+    if args.finetune:
+        model = T5ForConditionalGeneration.from_pretrained(checkpoint)
+    else:
+        config = T5Config.from_pretrained(checkpoint)
+        model = T5ForConditionalGeneration(config)
+    return model.to(DEVICE)
 
 def mkdir(dirpath):
     if not os.path.exists(dirpath):
