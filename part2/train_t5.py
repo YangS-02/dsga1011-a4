@@ -12,6 +12,10 @@ from transformers import GenerationConfig
 from utils import compute_metrics, save_queries_and_records
 from load_data import build_tokenizer, load_t5_data
 
+# For parallelization.
+from concurrent.futures import ThreadPoolExecutor
+from copy import deepcopy
+
 DEVICE = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
 PAD_IDX = 0
 
@@ -51,6 +55,7 @@ def get_args():
     # Other hyperparameters
     parser.add_argument("--max_new_tokens", type=int, default=512)
     parser.add_argument("--add_sql_operators", action="store_true")
+    parser.add_argument("--parallel_dev", action="store_true") # For parallelizing dev eval.
 
     args = parser.parse_args()
     return args
@@ -132,7 +137,61 @@ def train_epoch(args, model, train_loader, optimizer, scheduler):
             total_tokens += num_tokens
 
     return total_loss / total_tokens
-        
+
+@torch.inference_mode()
+def _evaluate_dev_batch(model, batch, max_new_tokens, num_beams):
+    encoder_ids, encoder_mask, decoder_inputs, decoder_targets, starts = (
+        tensor.to(model.device) for tensor in batch
+    )
+
+    logits = model(
+        input_ids=encoder_ids,
+        attention_mask=encoder_mask,
+        decoder_input_ids=decoder_inputs,
+        use_cache=False,
+    ).logits
+    loss = nn.functional.cross_entropy(
+        logits.flatten(0, 1), decoder_targets.flatten(),
+        ignore_index=PAD_IDX, reduction="sum",
+    ).item()
+    num_tokens = (decoder_targets != PAD_IDX).sum().item()
+    del logits
+
+    generated_ids = model.generate(
+        input_ids=encoder_ids,
+        attention_mask=encoder_mask,
+        decoder_input_ids=starts,
+        max_new_tokens=max_new_tokens,
+        num_beams=num_beams,
+        do_sample=False,
+    )
+    return loss, num_tokens, generated_ids.cpu()
+
+def _iter_dev_results(model, dev_loader, max_new_tokens, num_beams, parallel):
+    two_gpus = (
+        parallel and model.device.type == "cuda" and torch.cuda.device_count() >= 2
+    )
+    if not two_gpus:
+        for batch in dev_loader:
+            yield _evaluate_dev_batch(model, batch, max_new_tokens, num_beams)
+        return
+
+    second_index = 1 if model.device.index == 0 else 0
+    replica = deepcopy(model).to(torch.device("cuda", second_index))
+    print(f"Parallel dev evaluation on {model.device} and {replica.device}.")
+
+    with ThreadPoolExecutor(max_workers=1) as first, ThreadPoolExecutor(max_workers=1) as second:
+        workers = ((first, model), (second, replica))
+        futures = []
+        for index, batch in enumerate(dev_loader):
+            executor, batch_model = workers[index % 2]
+            futures.append(executor.submit(
+                _evaluate_dev_batch, batch_model, batch, max_new_tokens, num_beams
+            ))
+
+        for future in futures:
+            yield future.result()
+
 def eval_epoch(args, model, dev_loader, gt_sql_pth, model_sql_path, gt_record_path, model_record_path, *, num_beams=1):
     '''
     You must implement the evaluation loop to be using during training. We recommend keeping track
@@ -145,37 +204,22 @@ def eval_epoch(args, model, dev_loader, gt_sql_pth, model_sql_path, gt_record_pa
     '''
     model.eval()
     tokenizer = dev_loader.dataset.tokenizer
-    criterion = nn.CrossEntropyLoss(ignore_index=PAD_IDX, reduction="sum")
     total_loss, total_tokens = 0.0, 0
     predictions = []
 
-    with torch.inference_mode():
-        for batch in tqdm(dev_loader):
-            encoder_ids, encoder_mask, decoder_inputs, decoder_targets, starts = (
-                tensor.to(DEVICE) for tensor in batch
-            )
+    results = _iter_dev_results(
+        model, dev_loader, args.max_new_tokens, num_beams,
+        parallel=getattr(args, "parallel_dev", False),
+    )
 
-            logits = model(
-                input_ids=encoder_ids,
-                attention_mask=encoder_mask,
-                decoder_input_ids=decoder_inputs,
-                use_cache=False,
-            ).logits
-            total_loss += criterion(logits.flatten(0, 1), decoder_targets.flatten()).item()
-            total_tokens += (decoder_targets != PAD_IDX).sum().item()
-
-            generated_ids = model.generate(
-                input_ids=encoder_ids,
-                attention_mask=encoder_mask,
-                decoder_input_ids=starts,
-                max_new_tokens=args.max_new_tokens,
-                num_beams=num_beams,
-                do_sample=False,
-            )
-            predictions.extend(tokenizer.batch_decode(
-                generated_ids.cpu(), skip_special_tokens=True,
-                clean_up_tokenization_spaces=False,
-            ))
+    for batch_loss, num_tokens, generated_ids in tqdm(results, total=len(dev_loader)):
+        total_loss += batch_loss
+        total_tokens += num_tokens
+        predictions.extend(tokenizer.batch_decode(
+            generated_ids,
+            skip_special_tokens=True,
+            clean_up_tokenization_spaces=False,
+        ))
 
     save_queries_and_records(predictions, model_sql_path, model_record_path)
     sql_em, record_em, record_f1, errors = compute_metrics(
