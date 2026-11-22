@@ -5,6 +5,7 @@ import re
 import pickle
 import random
 from tqdm import tqdm
+from time import monotonic
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import List, Any
@@ -12,6 +13,7 @@ from typing import List, Any
 import torch
 
 DB_PATH = 'data/flight_database.db'
+QUERY_TIMEOUT_SECONDS = 10
 
 def compute_metrics(gt_path: str, model_path: str, gt_query_records: str = None, model_query_records: str = None):
     '''
@@ -82,60 +84,35 @@ def read_queries(sql_path: str):
         qs = [q.strip() for q in f.readlines()]
     return qs
 
-def compute_records(processed_qs: List[str]):
-    '''
-    Helper function for computing the records associated with each SQL query in the
-    input list. You may change the number of threads or the timeout variable (in seconds)
-    based on your computational constraints.
+def compute_records(processed_qs: List[str], timeout_secs: float = QUERY_TIMEOUT_SECONDS):
+    records = [[] for _ in processed_qs]
+    errors = [""] * len(processed_qs)
 
-    Input:
-        * processed_qs (List[str]): The list of SQL queries to execute
-    '''
-    num_threads = 10
-    timeout_secs = 120
+    with ThreadPoolExecutor(max_workers=10) as pool:
+        futures = [
+            pool.submit(compute_record, index, query, timeout_secs)
+            for index, query in enumerate(processed_qs)
+        ]
+        for future in tqdm(as_completed(futures), total=len(futures)):
+            index, rows, error = future.result()
+            records[index] = rows
+            errors[index] = error
 
-    pool = ThreadPoolExecutor(num_threads)
-    futures = []
-    for i, query in enumerate(processed_qs):
-        futures.append(pool.submit(compute_record, i, query))
-        
-    rec_dict = {}
-    try:
-        for x in tqdm(as_completed(futures, timeout=timeout_secs)):
-            query_id, rec, error_msg = x.result()
-            rec_dict[query_id] = (rec, error_msg)
-    except:
-        for future in futures:
-            if not future.done():
-                future.cancel()
-            
-    recs = []
-    error_msgs = []
-    for i in range(len(processed_qs)):
-        if i in rec_dict:
-            rec, error_msg = rec_dict[i]
-            recs.append(rec)
-            error_msgs.append(error_msg)
-        else:
-            recs.append([])
-            error_msgs.append("Query timed out")
-            
-    return recs, error_msgs
+    return records, errors
 
-def compute_record(query_id, query):
+
+def compute_record(query_id, query, timeout_secs=QUERY_TIMEOUT_SECONDS):
     conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-
     try:
-        cursor.execute(query)
-        rec = cursor.fetchall()
-        error_msg = ""
-    except Exception as e:
-        rec = []
-        error_msg = f"{type(e).__name__}: {e}"
-
-    conn.close()
-    return query_id, rec, error_msg
+        deadline = monotonic() + timeout_secs
+        conn.set_progress_handler(lambda: monotonic() >= deadline, 1000)
+        return query_id, conn.execute(query).fetchall(), ""
+    except Exception as error:
+        if getattr(error, "sqlite_errorcode", None) == sqlite3.SQLITE_INTERRUPT:
+            return query_id, [], "Query timed out"
+        return query_id, [], f"{type(error).__name__}: {error}"
+    finally:
+        conn.close()
 
 def compute_sql_exact_match(gt_qs: List[str], model_qs: List[str]):
     '''
