@@ -9,8 +9,8 @@ import wandb
 
 from t5_utils import initialize_model, initialize_optimizer_and_scheduler, save_model, load_model_from_checkpoint, setup_wandb
 from transformers import GenerationConfig
-from load_data import load_t5_data
 from utils import compute_metrics, save_queries_and_records
+from load_data import build_tokenizer, load_t5_data
 
 DEVICE = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
 PAD_IDX = 0
@@ -50,6 +50,7 @@ def get_args():
 
     # Other hyperparameters
     parser.add_argument("--max_new_tokens", type=int, default=512)
+    parser.add_argument("--add_sql_operators", action="store_true")
 
     args = parser.parse_args()
     return args
@@ -91,9 +92,10 @@ def train(args, model, train_loader, dev_loader, optimizer, scheduler):
         else:
             epochs_since_improvement += 1
 
-        save_model(checkpoint_dir, model, best=False)
+        tokenizer = dev_loader.dataset.tokenizer
+        save_model(checkpoint_dir, model, best=False, tokenizer=tokenizer)
         if epochs_since_improvement == 0:
-            save_model(checkpoint_dir, model, best=True)
+            save_model(checkpoint_dir, model, best=True, tokenizer=tokenizer)
 
         if epochs_since_improvement >= args.patience_epochs:
             break
@@ -197,7 +199,8 @@ def main():
         setup_wandb(args)
 
     # Load the data and the model
-    train_loader, dev_loader, test_loader = load_t5_data(args.batch_size, args.test_batch_size)
+    tokenizer = build_tokenizer(add_sql_operators=args.add_sql_operators)
+    train_loader, dev_loader, test_loader = load_t5_data(args.batch_size, args.test_batch_size, tokenizer=tokenizer)
     model = initialize_model(args)
     optimizer, scheduler = initialize_optimizer_and_scheduler(args, model, len(train_loader))
 

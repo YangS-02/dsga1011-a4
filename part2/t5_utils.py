@@ -35,10 +35,12 @@ def mkdir(dirpath):
         except FileExistsError:
             pass
 
-def save_model(checkpoint_dir, model, best):
+def save_model(checkpoint_dir, model, best, tokenizer=None):
     # Save model checkpoint to be able to load the model later
     checkpoint_path = os.path.join(checkpoint_dir, "best" if best else "last")
     model.save_pretrained(checkpoint_path)
+    if tokenizer is not None:
+        tokenizer.save_pretrained(checkpoint_path)
 
 def load_model_from_checkpoint(args, best):
     # Load model from a checkpoint

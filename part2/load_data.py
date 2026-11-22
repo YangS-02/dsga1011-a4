@@ -13,8 +13,16 @@ import torch
 
 PAD_IDX = 0
 
+
+def build_tokenizer(add_sql_operators=False):
+    tokenizer = T5TokenizerFast.from_pretrained("google-t5/t5-small")
+    if add_sql_operators:
+        tokenizer.add_tokens(["<", "<="])
+    return tokenizer
+
+
 class T5Dataset(Dataset):
-    def __init__(self, data_folder, split):
+    def __init__(self, data_folder, split, tokenizer=None):
         '''
         Skeleton for the class for performing data processing for the T5 model.
 
@@ -30,7 +38,7 @@ class T5Dataset(Dataset):
                 - Decoder predicts SQL queries one token at a time. And it makes the next token prediction at each input position.
                 - So, at the start, it has no SQL tokens to predict the next, so it needs something to start with.
         '''
-        self.tokenizer = T5TokenizerFast.from_pretrained('google-t5/t5-small')
+        self.tokenizer = tokenizer if tokenizer is not None else build_tokenizer()
         self.questions_tokenized, self.sqls_tokenized  = self.process_data(data_folder, split, self.tokenizer)
 
     def process_data(self, data_folder, split, tokenizer):
@@ -122,19 +130,19 @@ def test_collate_fn(batch):
     initial_decoder_inputs = torch.full((len(batch), 1), PAD_IDX, dtype=torch.long)
     return encoder_ids, encoder_mask, initial_decoder_inputs
 
-def get_dataloader(batch_size, split):
+def get_dataloader(batch_size, split, tokenizer=None):
     data_folder = 'data'
-    dset = T5Dataset(data_folder, split)
+    dset = T5Dataset(data_folder, split, tokenizer=tokenizer)
     shuffle = split == "train"
     collate_fn = normal_collate_fn if split != "test" else test_collate_fn
 
     dataloader = DataLoader(dset, batch_size=batch_size, shuffle=shuffle, collate_fn=collate_fn)
     return dataloader
 
-def load_t5_data(batch_size, test_batch_size):
-    train_loader = get_dataloader(batch_size, "train")
-    dev_loader = get_dataloader(test_batch_size, "dev")
-    test_loader = get_dataloader(test_batch_size, "test")
+def load_t5_data(batch_size, test_batch_size, tokenizer=None):
+    train_loader = get_dataloader(batch_size, "train", tokenizer=tokenizer)
+    dev_loader = get_dataloader(test_batch_size, "dev", tokenizer=tokenizer)
+    test_loader = get_dataloader(test_batch_size, "test", tokenizer=tokenizer)
     
     return train_loader, dev_loader, test_loader
 
