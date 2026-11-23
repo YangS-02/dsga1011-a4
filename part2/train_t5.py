@@ -227,13 +227,38 @@ def eval_epoch(args, model, dev_loader, gt_sql_pth, model_sql_path, gt_record_pa
     )
     error_rate = sum(bool(error) for error in errors) / len(errors)
     return total_loss / total_tokens, record_f1, record_em, sql_em, error_rate
-        
-def test_inference(args, model, test_loader, model_sql_path, model_record_path):
+
+@torch.inference_mode()
+def test_inference(args, model, test_loader, model_sql_path, model_record_path, *, num_beams=1):
     '''
     You must implement inference to compute your model's generated SQL queries and its associated 
     database records. Implementation should be very similar to eval_epoch.
     '''
-    pass
+    model.eval()
+    tokenizer = test_loader.dataset.tokenizer
+    predictions = []
+
+    for encoder_ids, encoder_mask, starts in tqdm(test_loader, desc="Generating test SQL"):
+        generated_ids = model.generate(
+            input_ids=encoder_ids.to(model.device),
+            attention_mask=encoder_mask.to(model.device),
+            decoder_input_ids=starts.to(model.device),
+            max_new_tokens=args.max_new_tokens,
+            num_beams=num_beams,
+            do_sample=False,
+        )
+        predictions.extend(tokenizer.batch_decode(
+            generated_ids.cpu(),
+            skip_special_tokens=True,
+            clean_up_tokenization_spaces=False,
+        ))
+
+    if len(predictions) != len(test_loader.dataset):
+        raise RuntimeError("Expected one SQL prediction per test question.")
+    if any("\n" in query or "\r" in query for query in predictions):
+        raise RuntimeError("Expected each predicted SQL query to fit on one line.")
+
+    save_queries_and_records(predictions, model_sql_path, model_record_path)
 
 def main():
     # Get key arguments
@@ -268,10 +293,10 @@ def main():
     print(f"Dev set results: Loss: {dev_loss}, Record F1: {dev_record_f1}, Record EM: {dev_record_em}, SQL EM: {dev_sql_em}")
     print(f"Dev set results: {dev_error_rate*100:.2f}% of the generated outputs led to SQL errors")
 
-    # Test set
-    model_sql_path = os.path.join(f'results/t5_{model_type}_{experiment_name}_test.sql')
-    model_record_path = os.path.join(f'records/t5_{model_type}_{experiment_name}_test.pkl')
-    test_inference(args, model, test_loader, model_sql_path, model_record_path)
+    # Test set - we gonna use separate script since beam search.
+    # model_sql_path = os.path.join(f'results/t5_{model_type}_{experiment_name}_test.sql')
+    # model_record_path = os.path.join(f'records/t5_{model_type}_{experiment_name}_test.pkl')
+    # test_inference(args, model, test_loader, model_sql_path, model_record_path)
 
 if __name__ == "__main__":
     main()
